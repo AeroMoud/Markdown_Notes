@@ -1,38 +1,40 @@
-# 🔌 MAVLink SITL — Port Debugging & Connection Guide
+# MAVLink Chapter 4 — Ports, Debugging & Connections
 
-## 📋 Table of Contents
-- [The Big Picture](#-the-big-picture)
-- [What Actually Starts When You Run SITL](#-what-actually-starts-when-you-run-sitl)
-- [The Ports and What They Mean](#-the-ports-and-what-they-mean)
-- [TCP vs UDP — The Real Difference](#-tcp-vs-udp--the-real-difference)
-- [The WSL IP Problem](#-the-wsl-ip-problem)
-- [How to Debug Step by Step](#-how-to-debug-step-by-step)
-- [Reading the Tools](#-reading-the-tools)
-- [Writing the Connection String](#-writing-the-connection-string)
-- [Real Debugging Sessions](#-real-debugging-sessions)
-- [Common Mistakes](#-common-mistakes)
-- [Recap — Key Takeaways](#-recap--key-takeaways)
+## Table of Contents
+
+- [The Big Picture](#the-big-picture)
+- [What Actually Starts When You Run SITL](#what-actually-starts-when-you-run-sitl)
+- [The Ports and What They Mean](#the-ports-and-what-they-mean)
+- [TCP vs UDP — The Real Difference](#tcp-vs-udp--the-real-difference)
+- [The WSL IP Problem](#the-wsl-ip-problem)
+- [How to Debug Step by Step](#how-to-debug-step-by-step)
+- [Reading the Tools](#reading-the-tools)
+- [Writing the Connection String](#writing-the-connection-string)
+- [Real Debugging Sessions](#real-debugging-sessions)
+- [Common Mistakes](#common-mistakes)
+- [Recap — Key Takeaways](#recap--key-takeaways)
+- [Check Yourself](#check-yourself)
 
 ---
 
-## 🧠 The Big Picture
+## The Big Picture
 
 Before any ports or commands, get this mental model right.
 
 When you run SITL, you are not running one program. You are running **two programs talking to each other**, and your Python script talks to the **middleman**, not the simulator directly.
 
 ```
-arducopter  ──►  MAVProxy  ──►  your Python script
-(simulator)      (middleman)     (your code)
+arducopter  -->  MAVProxy  -->  your Python script
+(simulator)      (middleman)    (your code)
 ```
 
 **MAVProxy is the middleman.** It opens ports so that external programs — your Python script, QGroundControl, APM Planner — can connect. You never talk to `arducopter` directly.
 
-> ⚠️ **Important:** When you launch with `sim_vehicle.py`, the script itself is a Python process that connects to `arducopter` internally to manage it. This occupies one connection slot before you even run your script.
+**Important:** When you launch with `sim_vehicle.py`, the script itself is a Python process that connects to `arducopter` internally to manage it. This occupies one connection slot before you even run your script.
 
 ---
 
-## 🏗️ What Actually Starts When You Run SITL
+## What Actually Starts When You Run SITL
 
 When you run this:
 
@@ -43,20 +45,17 @@ When you run this:
 Three things start simultaneously:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    sim_vehicle.py                           │
-│                                                             │
-│   ┌─────────────────┐      ┌──────────────────────────┐    │
-│   │  arducopter     │ ◄──► │  MAVProxy                │    │
-│   │  (the actual    │      │  (the middleman)         │    │
-│   │   simulator)    │      │                          │    │
-│   │                 │      │  Opens ports:            │    │
-│   │  Listens on     │      │  TCP 5760  (primary)     │    │
-│   │  TCP 5760       │      │  TCP 5762  (secondary)   │    │
-│   │                 │      │  UDP 14550 (broadcast)   │    │
-│   └─────────────────┘      │  UDP 14551 (secondary)   │    │
-│                             └──────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+sim_vehicle.py
+|
+|-- arducopter (the actual simulator)
+|   Listens on TCP 5760
+|
+|-- MAVProxy (the middleman)
+    Opens ports:
+      TCP 5760  (primary)
+      TCP 5762  (secondary)
+      UDP 14550 (broadcast)
+      UDP 14551 (secondary)
 ```
 
 The moment SITL starts, it prints every port it opened. **Always read this startup output** — it is your most reliable source of truth:
@@ -70,20 +69,9 @@ If you don't see these lines, SITL didn't fully start. Wait longer or restart it
 
 ---
 
-## 🚪 The Ports and What They Mean
+## The Ports and What They Mean
 
 MAVProxy opens several ports. Each one is a door your script can walk through.
-
-```
-┌─────────────────────────────────────────────────────┐
-│                    MAVProxy                         │
-│                                                     │
-│   TCP door 5760  ──  primary connection             │
-│   TCP door 5762  ──  secondary connection           │
-│   UDP door 14550 ──  broadcast stream               │
-│   UDP door 14551 ──  second broadcast stream        │
-└─────────────────────────────────────────────────────┘
-```
 
 | Port | Protocol | What it is |
 |---|---|---|
@@ -92,13 +80,13 @@ MAVProxy opens several ports. Each one is a door your script can walk through.
 | **14550** | UDP | A broadcast. MAVProxy sends data out here continuously. |
 | **14551** | UDP | A second broadcast stream. |
 
-### ⚠️ The Critical Rule About TCP 5760
+### The Critical Rule About TCP 5760
 
 TCP only allows **one client at a time.** When you launch `sim_vehicle.py`, it internally connects to 5760 itself. That means:
 
 ```
-sim_vehicle.py (internal)  ──► occupies 5760
-your Python script         ──► gets refused or starves
+sim_vehicle.py (internal)  -->  occupies 5760
+your Python script         -->  gets refused or starves
 ```
 
 This is the most common cause of `wait_heartbeat()` hanging forever even though SITL is running fine.
@@ -107,9 +95,7 @@ This is the most common cause of `wait_heartbeat()` hanging forever even though 
 
 ---
 
-## 📻 TCP vs UDP — The Real Difference
-
-Think of TCP and UDP like two different types of communication:
+## TCP vs UDP — The Real Difference
 
 **TCP is like a phone call.**
 - You dial a specific number (connect to an IP and port)
@@ -131,11 +117,11 @@ Think of TCP and UDP like two different types of communication:
 | Best for | Reliable scripting | Multiple listeners |
 | Python string | `'tcp:127.0.0.1:5760'` | `'udp:0.0.0.0:14550'` |
 
-> **Always try TCP 5762 first** when 5760 is occupied. UDP becomes useful when you need multiple tools connected at the same time.
+Always try TCP 5762 first when 5760 is occupied. UDP becomes useful when you need multiple tools connected at the same time.
 
 ---
 
-## 🌐 The WSL IP Problem
+## The WSL IP Problem
 
 This is the single most common source of confusion when developing on Windows with WSL.
 
@@ -144,19 +130,11 @@ This is the single most common source of confusion when developing on Windows wi
 Every machine has a loopback address: `127.0.0.1`. This means "this machine talking to itself." The problem with WSL is that WSL and Windows are **two different machines** from a networking perspective, even though they share the same physical computer.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Your Physical Computer                              │
-│                                                      │
-│  ┌─────────────────┐      ┌──────────────────────┐  │
-│  │  WSL (Linux)    │      │  Windows             │  │
-│  │                 │      │                      │  │
-│  │  127.0.0.1 ─────│─ ✗ ──│──── 127.0.0.1        │  │
-│  │  (WSL's self)   │      │     (Windows' self)  │  │
-│  │                 │      │                      │  │
-│  │  172.x.x.x ─────│──────│──── 172.x.x.x        │  │
-│  │  (shared bridge)│      │     (same address)   │  │
-│  └─────────────────┘      └──────────────────────┘  │
-└──────────────────────────────────────────────────────┘
+Your Physical Computer
+
+  WSL (Linux)                     Windows
+  127.0.0.1 (WSL's self)    X     127.0.0.1 (Windows' self)
+  172.x.x.x (shared bridge) ----> 172.x.x.x (same address, reachable)
 ```
 
 | Where is SITL | Where is Python | IP to use |
@@ -182,69 +160,50 @@ That number is what you put in your Python connection string when Python runs on
 
 ---
 
-## 🔍 How to Debug Step by Step
+## How to Debug Step by Step
 
 Follow this exact sequence every time you have a connection problem. **Do not skip steps.** Stop the moment you find the problem.
 
 ```
 START: Python script can't connect / wait_heartbeat() hangs
-              │
-              ▼
-┌─────────────────────────────────────┐
-│ Step 1                              │
-│ Is SITL actually running?           │
-│                                     │
-│ Read the SITL terminal — look for:  │
-│ "bind port 5760 for SERIAL0"        │
-└──────────────┬──────────────────────┘
-               │ Yes, I see it
-               ▼
-┌─────────────────────────────────────┐
-│ Step 2                              │
-│ Is the port actually open?          │
-│                                     │
-│ netstat -tlnp | grep 5760           │
-│                                     │
-│ Look for: LISTEN                    │
-└──────────────┬──────────────────────┘
-               │ I see LISTEN
-               ▼
-┌─────────────────────────────────────┐
-│ Step 3                              │
-│ Is something already connected?     │
-│                                     │
-│ netstat -tnp | grep 5760            │
-│                                     │
-│ Look for: ESTABLISHED               │
-└──────────────┬──────────────────────┘
-               │
-       ┌───────┴────────┐
-       │                │
-  No ESTABLISHED    ESTABLISHED found
-       │                │
-       ▼                ▼
-┌────────────┐   ┌────────────────────────┐
-│ Step 4     │   │ Who owns it?           │
-│ Raw test   │   │                        │
-│            │   │ Is it sim_vehicle.py?  │
-│ nc -zv     │   │ → Use port 5762        │
-│ 127.0.0.1  │   │                        │
-│ 5760       │   │ Is it your old script? │
-└─────┬──────┘   │ → kill <PID>           │
-      │          └────────────────────────┘
-  succeeded
-      │
-      ▼
-┌─────────────────────────────────────┐
-│ Step 5                              │
-│ Fix connection string in Python     │
-│ and run your script                 │
-└─────────────────────────────────────┘
+              |
+              v
+Step 1 — Is SITL actually running?
+  Read the SITL terminal — look for:
+  "bind port 5760 for SERIAL0"
+              |
+              | Yes, I see it
+              v
+Step 2 — Is the port actually open?
+  netstat -tlnp | grep 5760
+  Look for: LISTEN
+              |
+              | I see LISTEN
+              v
+Step 3 — Is something already connected?
+  netstat -tnp | grep 5760
+  Look for: ESTABLISHED
+              |
+       +------+------+
+       |             |
+  No ESTABLISHED   ESTABLISHED found
+       |             |
+       v             v
+Step 4            Who owns it?
+Raw test          ps aux | grep <PID>
+nc -zv            Is it sim_vehicle.py? --> Use port 5762
+127.0.0.1         Is it your old script? --> kill <PID>
+5760
+       |
+   succeeded
+       |
+       v
+Step 5 — Fix connection string in Python and run your script
 ```
 
 ---
 
-## 📖 Reading the Tools
+## Reading the Tools
 
 ### `netstat -tlnp | grep 5760` — Is the port open?
 
@@ -266,7 +225,7 @@ tcp    0.0.0.0:5760       0.0.0.0:*          LISTEN   9671/arducopter
 | `LISTEN` | Port is open and waiting |
 | `PID/Program` | Which process owns the port |
 
-> **`0.0.0.0` vs `127.0.0.1` is critical.** If you see `127.0.0.1:5760` and Python is on Windows — that is your problem. The port is invisible to Windows.
+**`0.0.0.0` vs `127.0.0.1` is critical.** If you see `127.0.0.1:5760` and Python is on Windows — that is your problem. The port is invisible to Windows.
 
 ---
 
@@ -294,8 +253,8 @@ netstat -tnp | grep 5760
 These two lines are two sides of the same connection:
 
 ```
-python3 (port 42110)  ←──connected──►  arducopter (port 5760)
-PID 9668                                PID 9671
+python3 (port 42110)  <-- connected -->  arducopter (port 5760)
+PID 9668                                 PID 9671
 ```
 
 **How to identify who the connected Python process is:**
@@ -323,7 +282,7 @@ This tests the port **without involving Python at all.**
 | `Connection refused` | Port is closed — fix SITL first |
 | Hangs with no output | Wrong IP address — packet not reaching host |
 
-> **Always run `nc` before running your Python script.** If `nc` fails, Python will also fail. Fix the network side first.
+**Always run `nc` before running your Python script.** If `nc` fails, Python will also fail. Fix the network side first.
 
 ---
 
@@ -352,7 +311,7 @@ output add udp:127.0.0.1:14560
 
 ---
 
-## ✍️ Writing the Connection String
+## Writing the Connection String
 
 Your connection string has exactly three parts:
 
@@ -360,7 +319,7 @@ Your connection string has exactly three parts:
 'protocol:ip_address:port'
 ```
 
-**Answer these three questions from `netstat` — never guess:**
+Answer these three questions from `netstat` — never guess:
 
 ### Question 1 — What protocol?
 Read the first column of `netstat -tlnp`. It says `tcp` or `udp`.
@@ -374,8 +333,9 @@ Read the first column of `netstat -tlnp`. It says `tcp` or `udp`.
 ### Question 3 — What port?
 Read the Local Address column from `netstat`. The number after the colon.
 
-**Worked example — reading from real `netstat` output:**
+### Worked example
 
+Given this `netstat` output:
 ```
 tcp   0.0.0.0:5760   0.0.0.0:*   LISTEN   9671/arducopter
 ```
@@ -391,11 +351,7 @@ master = mavutil.mavlink_connection('tcp:127.0.0.1:5760')
 
 ---
 
-## 🩺 Real Debugging Sessions
-
-These are real outputs with full explanations of what they mean and what to do.
-
----
+## Real Debugging Sessions
 
 ### Session 1 — Port occupied by sim_vehicle.py
 
@@ -432,7 +388,7 @@ tcp   127.0.0.1:5760    127.0.0.1:39758  TIME_WAIT     -
 
 **Diagnosis:**
 - PID 6217 is a Python process holding the connection
-- TIME_WAIT line shows a previous connection just closed
+- `TIME_WAIT` line shows a previous connection just closed
 - Your new script will starve — old script is consuming all heartbeat packets
 
 **Fix:**
@@ -468,25 +424,25 @@ master = mavutil.mavlink_connection('tcp:127.0.0.1:5760')
 
 ---
 
-## ⚠️ Common Mistakes
+## Common Mistakes
 
 ### Mistake 1 — Not reading SITL startup output
 
-❌ **Wrong:** Skip the terminal output and immediately try to connect.
+**Wrong:** Skip the terminal output and immediately try to connect.
 
-✅ **Right:** Always look for `bind port 5760 for SERIAL0` in the SITL terminal before running anything. If you don't see it, SITL is not ready.
+**Right:** Always look for `bind port 5760 for SERIAL0` in the SITL terminal before running anything. If you don't see it, SITL is not ready.
 
 ---
 
 ### Mistake 2 — Using TCP 5760 when sim_vehicle.py is running
 
-❌ **Wrong:** Connecting to 5760 while `sim_vehicle.py` is the launcher.
+**Wrong:** Connecting to 5760 while `sim_vehicle.py` is the launcher.
 ```python
 master = mavutil.mavlink_connection('tcp:127.0.0.1:5760')
 # Hangs on wait_heartbeat() forever
 ```
 
-✅ **Right:** Use 5762 which stays free for your scripts.
+**Right:** Use 5762 which stays free for your scripts.
 ```python
 master = mavutil.mavlink_connection('tcp:127.0.0.1:5762')
 ```
@@ -495,21 +451,21 @@ master = mavutil.mavlink_connection('tcp:127.0.0.1:5762')
 
 ### Mistake 3 — Not checking for existing connections before debugging Python
 
-❌ **Wrong:** Staring at Python error messages when the real problem is a stale process on port 5760.
+**Wrong:** Staring at Python error messages when the real problem is a stale process on port 5760.
 
-✅ **Right:** Always run `netstat -tnp | grep 5760` first. If you see `ESTABLISHED`, fix that before touching Python.
+**Right:** Always run `netstat -tnp | grep 5760` first. If you see `ESTABLISHED`, fix that before touching Python.
 
 ---
 
 ### Mistake 4 — Wrong IP when Python is on Windows
 
-❌ **Wrong:** Using `127.0.0.1` from Windows assuming it reaches WSL.
+**Wrong:** Using `127.0.0.1` from Windows assuming it reaches WSL.
 ```python
 master = mavutil.mavlink_connection('tcp:127.0.0.1:5760')
 # May hang because 127.0.0.1 on Windows is Windows loopback, not WSL
 ```
 
-✅ **Right:** Find WSL IP and use it.
+**Right:** Find WSL IP and use it.
 ```bash
 # Inside WSL:
 hostname -I
@@ -523,21 +479,21 @@ master = mavutil.mavlink_connection('tcp:172.25.144.55:5760')
 
 ### Mistake 5 — Running `nc` or port checks from Windows to verify WSL ports
 
-❌ **Wrong:** Running port checks from Windows PowerShell expecting to see WSL's ports.
+**Wrong:** Running port checks from Windows PowerShell expecting to see WSL's ports.
 
-✅ **Right:** Always run `netstat` and `nc` from **inside WSL** where SITL is running.
+**Right:** Always run `netstat` and `nc` from **inside WSL** where SITL is running.
 
 ---
 
 ### Mistake 6 — UDP connection string using specific IP instead of 0.0.0.0
 
-❌ **Wrong:** Treating UDP like TCP and specifying the server IP.
+**Wrong:** Treating UDP like TCP and specifying the server IP.
 ```python
 master = mavutil.mavlink_connection('udp:127.0.0.1:14550')
 # Wrong — you are not connecting TO something, you are listening
 ```
 
-✅ **Right:** Bind to all interfaces so you catch the broadcast.
+**Right:** Bind to all interfaces so you catch the broadcast.
 ```python
 master = mavutil.mavlink_connection('udp:0.0.0.0:14550')
 # 0.0.0.0 means "listen on all interfaces for incoming UDP"
@@ -545,7 +501,7 @@ master = mavutil.mavlink_connection('udp:0.0.0.0:14550')
 
 ---
 
-## 🔁 Recap — Key Takeaways
+## Recap — Key Takeaways
 
 - **MAVProxy is the middleman** — your Python script never talks to `arducopter` directly
 - **`sim_vehicle.py` occupies port 5760 internally** — always use port 5762 when launching with `sim_vehicle.py`
@@ -560,13 +516,32 @@ master = mavutil.mavlink_connection('udp:0.0.0.0:14550')
 
 ---
 
-## ✅ Check Yourself
+## Check Yourself
 
 **Question 1 — Conceptual:**
 You run `netstat -tnp | grep 5760` and see one ESTABLISHED line where the program is `python3`. You did not run your script yet. What is that Python process, why is it there, and what port should you use instead?
 
+**Answer:** That Python process is `sim_vehicle.py` — it manages the SITL session and occupies port 5760 internally. This is expected. Use port 5762 instead, which `sim_vehicle.py` does not occupy.
+
+---
+
 **Question 2 — Applied:**
 You run `netstat -tlnp | grep 5760` and see `127.0.0.1:5760 LISTEN`. Your Python script is on Windows. Will it connect? What do you check next and what do you change?
 
+**Answer:** No, it will not connect. `127.0.0.1:5760` is listening on WSL's loopback only, which is invisible to Windows. Next, run `hostname -I` inside WSL to get the shared bridge IP (e.g., `172.25.144.55`). Change the connection string to `tcp:172.25.144.55:5760`.
+
+---
+
 **Question 3 — Debugging:**
-Your `nc -zv 127.0.0.1 5760` succeeds. Your Python script still hangs on `wait_heartbeat()`. Walk through every possible cause in order and what command you run to check each one.
+Your `nc -zv 127.0.0.1 5760` succeeds. Your Python script still hangs on `wait_heartbeat()`. Walk through every possible cause in order.
+
+**Answer, in order to check:**
+1. **Old script still consuming heartbeats** — run `netstat -tnp | grep 5760`. If you see `ESTABLISHED` under a Python PID, kill that process.
+2. **Port used but heartbeats not flowing** — check if MAVProxy is running correctly (look for SITL map/console window).
+3. **Wrong `target_system`** — add `print(master.target_system, master.target_component)` after `wait_heartbeat()` to confirm IDs are set.
+4. **Firewall or antivirus blocking** — try `nc` then immediately run the script; if `nc` succeeds but Python fails, something is intercepting the Python process's connection.
+5. **Missing `time.sleep(1)`** — add a 1-second sleep between `mavlink_connection()` and `wait_heartbeat()`.
+
+---
+
+*Tutorial covers MAVLink SITL port architecture, connection debugging, and WSL networking for ArduPilot development.*
